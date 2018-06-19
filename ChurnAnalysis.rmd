@@ -1,0 +1,252 @@
+---
+title: "Churn Analysis"
+output:
+  html_document:
+    df_print: paged
+---
+
+Installing and Loading the packages...
+
+```{r}
+# install.packages("dplyr")
+# install.packages("corrplot")
+# install.packages("ggplot2")
+# install.packages("ggthemes")
+# install.packages("caret")
+# install.packages("MASS")
+# install.packages("randomForest")
+# install.packages("party")
+# install.packages("tidyverse")
+# install.packages("gridExtra")
+#  install.packages("ROCR")
+```
+
+```{r}
+# load library
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(gridExtra)
+library(ggthemes)
+library(MASS)
+library(randomForest)
+library(party)
+library(tidyverse)
+```
+Load the Data from csv file and view 
+```{r}
+
+rawData <- read.csv("C:\\Data\\ChurnAnalysis\\data.csv")
+View(rawData)
+
+
+```
+
+```{r}
+
+```
+
+```{r}
+str(rawData)
+```
+Observations: 3,333
+Variables: 21
+
+finding out variables in the data..
+```{r}
+names(rawData)
+```
+
+Find the missing values in the Data. Cleanup the NAs
+```{r}
+data_ <- rawData
+data_ %>% map(~sum(is.na(.)))
+```
+
+It seems data is not having any missing value.
+
+<b> "Exploring the Data " </b>
+
+Find the customers already churned out and how many are continuing
+```{r}
+data_ %>% group_by(Churn) %>% summarise(Count=n())
+```
+
+Now, Let us look at the Service calls data and check if it is expalining something
+
+```{r}
+ggplot(data_) +
+  geom_bar(aes(x = Customer.service.calls, fill = Churn), position = "dodge")
+```
+
+```{r}
+data_ %>% 
+  group_by(Customer.service.calls, Churn) %>%
+  summarise(Count = n() ) %>%
+  mutate(freq = Count / sum(Count) ) 
+```
+
+<b>Insight: </b> The above chart and data indicates that the Churn increases with increase in the service calls frequency. for example 60% of the customer have churned out who have made 5-6 service calls.
+
+To find why the customer making service calls, I tried to find if there is any relation with call timing.
+
+```{r}
+
+val <- as.matrix(data_ %>% transmute(Customer.service.calls,Total.day.calls,Total.eve.calls,Total.night.calls,Total.intl.calls))
+c <- cor(val)
+p.mat <- cor.mtest(val)$p
+# Leave blank on no significant coefficient
+corrplot(c, type = "upper", order = "hclust",
+         p.mat = p.mat, sig.level = 0.01, insig = "p-value", )
+
+
+
+```
+
+<b>Insight:</b> The above correlation plot indicates that the customer making evening calls tend to make more service calls.
+
+```{r}
+# Observing the correlation of these variables with churn and keep only the ones that have a higher correlation
+with(data_, cor.test(Customer.service.calls, as.numeric(data_$Churn)))
+
+ggplot(data_, aes(Total.eve.calls,Customer.service.calls)) +
+  geom_point() +
+  geom_smooth()
+``` 
+
+
+<b> Logistic Regression </b>
+
+I am using logistic regression model to predict if the customer is going to churn or not. I will come up with customer rentention strategy and
+
+
+```{r}
+library(caret)
+library(dplyr)
+#names(data_)
+
+#removing varaiable which may not add any value to the model
+df <- data_
+df <- dplyr::select(df, -Id, -State, -Account.length, -Area.code, -International.plan, -Voice.mail.plan, -Number.vmail.messages)
+names(df)
+
+set.seed(5)
+
+inTrain <- createDataPartition(y = df$Churn, p=0.75, list=FALSE)
+
+train <- df[inTrain,]
+test <- df[-inTrain,]
+
+#fitting the model
+fit <- glm(Churn~., data=train, family=binomial(link="logit"))
+# fit <- glm(Churn~Customer.service.calls+Total.day.calls+Total.eve.calls+Total.night.calls+Total.intl.calls, data=train, family=binomial(link="logit"))
+
+
+summary(fit)
+
+#run predict on 25% test data
+churn.probs <- predict(fit, test, type="response")
+head(churn.probs)
+
+print("Confusion Matrix for Logistic Regression"); 
+table(test$Churn, churn.probs > 0.5)
+
+
+```
+
+
+```{r}
+summary(fit)
+```
+
+
+```{r}
+library(ROCR)
+# need to create prediction object from ROCR
+pr <- prediction(churn.probs, test$Churn)
+
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+```
+```{r}
+# AUC value
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+The AUC measure is 0.76, which is greater than 0.5 (baseline model), which is also OK.
+
+Now, few more feartures to check the accuracy.
+```{r}
+#fitting the model
+fit <- glm(Churn~., data=train, family=binomial(link="logit"))
+
+
+
+summary(fit)
+
+#run predict on 25% test data
+churn.probs <- predict(fit, test, type="response")
+head(churn.probs)
+
+print("Confusion Matrix for Logistic Regression"); 
+table(test$Churn, churn.probs > 0.5)
+
+```
+
+```{r}
+library(ROCR)
+# need to create prediction object from ROCR
+pr <- prediction(churn.probs, test$Churn)
+
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+```
+
+```{r}
+# AUC value
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+The AUC measure is 0.76, which is greater than 0.5 (baseline model) and greater than previous model which improves the accuracy.
+
+<b> Decision Trees </b>
+```{r}
+library(randomForest)
+#names(df)
+tree <- ctree(Churn~Customer.service.calls+Total.day.calls+Total.eve.calls+Total.night.calls+Total.intl.calls
+              +Total.day.minutes+Total.day.charge+Total.eve.minutes+Total.eve.charge+Total.night.minutes+Total.night.charge
+              +Total.intl.minutes+Total.intl.charge 
+              , train)
+plot(tree, type='simple')
+pred_tree <- predict(tree, test)
+print("Confusion Matrix for Decision Tree"); table(Predicted = pred_tree, Actual = test$Churn)
+```
+
+
+```{r}
+p1 <- predict(tree, train)
+tab1 <- table(Predicted = p1, Actual = train$Churn)
+tab2 <- table(Predicted = pred_tree, Actual = test$Churn)
+print(paste('Decision Tree Accuracy',sum(diag(tab2))/sum(tab2)))
+```
+
+The accuracy of the decision tree seems to be less than Logistic regression.
+
+<b> Random Forest </b>
+
+The error rate is relatively low when predicting "No", and the error rate is much higher when predicting "Yes".
+```{r}
+  rfModel <- randomForest(Churn ~., data = train)
+#print(rfModel)
+plot(rfModel)
+
+```
+
+
+
